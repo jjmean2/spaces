@@ -7,6 +7,7 @@
   "scripts": {
     "build": "pnpm --filter \"./packages/*\" build",
     "dev": "pnpm --filter @spaces/playground dev",
+    "dev:next": "pnpm --filter @spaces/next-demo dev",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"
   },

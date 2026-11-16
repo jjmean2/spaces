@@ -5,3 +5,5 @@ coverage/
 .DS_Store
 __screenshots__/
 .vitest/
+.next/
+next-env.d.ts
