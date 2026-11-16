@@ -54,7 +54,7 @@ import { createDragController } from './drag.ts'
 import type { DragController, DragState } from './drag.ts'
 import { Sash } from './Sash.tsx'
 import { useLayoutState } from './store.ts'
-import { SHOWS, isNestedLayout, logicalOrder } from './tabOrder.ts'
+import { SHOWS, domOrder, hasInnerStops, isNestedLayout, logicalOrder } from './tabOrder.ts'
 import { WindowResize } from './WindowResize.tsx'
 import type { LayoutStore } from './store.ts'
 
@@ -244,9 +244,16 @@ export function Layout({
         host.inert = true
       }
       host.dataset.spacesVisible = String(shown)
+      // A pane shown under a tab is that tab's panel. One drawn without tabs, such as a header
+      // bar in an app shell, gets no role.
       const tab = drag.tabElement(paneId)
-      if (tab?.id) host.setAttribute('aria-labelledby', tab.id)
-      else host.removeAttribute('aria-labelledby')
+      if (tab?.id) {
+        host.setAttribute('role', 'tabpanel')
+        host.setAttribute('aria-labelledby', tab.id)
+      } else {
+        host.removeAttribute('role')
+        host.removeAttribute('aria-labelledby')
+      }
       host.dataset.spacesFocused = String(paneId === focused)
     }
   }, [store, drag])
@@ -513,9 +520,10 @@ export function Layout({
     )
   }
 
-  // The browser would follow the DOM, where all pane content comes after all chrome. Move focus
-  // in the order a person sees instead. Runs after handlers inside the layout, so a control that
-  // uses Tab itself, or a nested layout that has somewhere to go, has already dealt with it.
+  // The browser would follow the DOM, where all pane content comes after all chrome. Where that
+  // differs from the order a person sees, move focus there instead. Runs after handlers inside
+  // the layout, so a control that uses Tab itself, or a nested layout that has somewhere to go,
+  // has already dealt with it.
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const root = rootRef.current
     if (!root || event.key !== 'Tab' || event.defaultPrevented) return
@@ -527,18 +535,23 @@ export function Layout({
     if (active === startGuard.current && !event.shiftKey) return moveTo(event, order[0])
     const at = active instanceof HTMLElement ? order.indexOf(active) : -1
     if (at === -1) return
+    // A date input or media controls have stops of their own inside. Only the browser knows
+    // when Tab has passed the last of them, so let it move; `correctNativeMove` fixes where it lands.
+    if (hasInnerStops(active!)) return
     const next = order[event.shiftKey ? at - 1 : at + 1]
+    // Where the browser would go anyway, let it.
+    const native = domOrder(root)
+    const nativeNext = native[native.indexOf(active as HTMLElement) + (event.shiftKey ? -1 : 1)]
+    if (next && next === nativeNext) return
     if (next) return moveTo(event, next)
     // Past the first or last stop. A nested layout leaves it to the layout around it. The
     // outermost one steps onto the guard at that end and lets the browser carry on from there.
     if (isNestedLayout(root)) return
     const guard = event.shiftKey ? startGuard.current : endGuard.current
     if (!guard) return
+    // Cleared when the guard loses focus again, which is the browser moving on.
     passingThrough.current = true
     guard.focus({ preventScroll: true })
-    setTimeout(() => {
-      passingThrough.current = false
-    }, 0)
   }
 
   const moveTo = (event: KeyboardEvent<HTMLDivElement>, target: HTMLElement | undefined) => {
@@ -548,14 +561,14 @@ export function Layout({
   }
 
   /**
-   * Tab pressed inside an iframe never reaches this document, so the browser moves on in DOM
-   * order when it leaves the iframe. Seen from here that is focus arriving with the iframe as
-   * where it came from. Send it to the stop that follows the iframe in visual order.
+   * Focus that the browser moved out of an element with stops of its own, in DOM order. For an
+   * iframe the key press never reached this document; for a date input or media controls it was
+   * left alone on purpose. Send focus to the stop that follows that element in visual order.
    */
-  const correctAfterIframe = (event: FocusEvent<HTMLDivElement>) => {
+  const correctNativeMove = (event: FocusEvent<HTMLDivElement>) => {
     const root = rootRef.current
     const from = event.relatedTarget
-    if (!root || !(from instanceof HTMLIFrameElement) || !root.contains(from)) return
+    if (!root || !(from instanceof HTMLElement) || !root.contains(from) || !hasInnerStops(from)) return
     // A press moves focus too, and that is the user choosing a place.
     if (performance.now() - lastPress.current < 500 || isNestedLayout(root)) return
     const order = logicalOrder(root)
@@ -598,11 +611,16 @@ export function Layout({
         }}
         onFocusCapture={(event) => {
           noteFocus(event.target)
-          correctAfterIframe(event)
+          correctNativeMove(event)
         }}
         onKeyDown={onKeyDown}
       >
-        <FocusGuard guardRef={startGuard} edge="start" onFocus={(event) => enterAt('start', event.relatedTarget)} />
+        <FocusGuard
+          guardRef={startGuard}
+          edge="start"
+          onFocus={(event) => enterAt('start', event.relatedTarget)}
+          onBlur={() => (passingThrough.current = false)}
+        />
         {pinned('left')}
         <div style={{ ...FILL, flex: '1 1 0', flexDirection: 'column', position: 'relative' }}>
           {pinned('top')}
@@ -664,7 +682,12 @@ export function Layout({
         ))}
 
         <DropIndicator drag={drag} />
-        <FocusGuard guardRef={endGuard} edge="end" onFocus={(event) => enterAt('end', event.relatedTarget)} />
+        <FocusGuard
+          guardRef={endGuard}
+          edge="end"
+          onFocus={(event) => enterAt('end', event.relatedTarget)}
+          onBlur={() => (passingThrough.current = false)}
+        />
       </div>
     </LayoutContext.Provider>
   )
@@ -679,10 +702,12 @@ function FocusGuard({
   guardRef,
   edge,
   onFocus,
+  onBlur,
 }: {
   guardRef: Ref<HTMLSpanElement>
   edge: 'start' | 'end'
   onFocus(event: FocusEvent<HTMLSpanElement>): void
+  onBlur(): void
 }) {
   return (
     <span
@@ -691,6 +716,7 @@ function FocusGuard({
       aria-hidden="true"
       data-spaces-focus-guard={edge}
       onFocus={onFocus}
+      onBlur={onBlur}
       style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', outline: 'none', opacity: 0 }}
     />
   )
@@ -747,7 +773,6 @@ const PaneHost = memo(function PaneHost({ paneId, domId, store, register, render
     <div
       ref={ref}
       id={domId}
-      role="tabpanel"
       // Focusable by a press, so Tab continues from the pane that was pressed, but not a stop itself.
       tabIndex={-1}
       data-spaces-pane={paneId}

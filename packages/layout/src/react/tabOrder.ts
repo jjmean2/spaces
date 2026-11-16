@@ -79,3 +79,41 @@ export function logicalOrder(root: HTMLElement, also?: Element | null): HTMLElem
 export function isNestedLayout(root: HTMLElement): boolean {
   return root.parentElement?.closest(`[${ROOT}]`) != null
 }
+
+/** The elements Tab stops on inside `root` in the order the browser itself would take: DOM order. */
+export function domOrder(root: HTMLElement): HTMLElement[] {
+  const out: HTMLElement[] = []
+  const walk = (node: Element) => {
+    for (const child of node.children) {
+      if (!(child instanceof HTMLElement) || child.inert) continue
+      if (isTabbable(child)) out.push(child)
+      if (child.tagName !== 'IFRAME') walk(child)
+    }
+  }
+  walk(root)
+  return out
+}
+
+const SEGMENTED_INPUTS = new Set(['date', 'time', 'datetime-local', 'month', 'week'])
+
+/**
+ * Whether Tab can stop more than once inside the element without focus leaving
+ * it: the fields of a date input, the buttons of media controls, whatever a
+ * custom element or an embedded document holds. Only the browser knows when
+ * the last of those has been passed, so it must be left to move focus itself.
+ */
+export function hasInnerStops(element: Element): boolean {
+  switch (element.tagName) {
+    case 'IFRAME':
+    case 'OBJECT':
+    case 'EMBED':
+      return true
+    case 'INPUT':
+      return SEGMENTED_INPUTS.has((element as HTMLInputElement).type)
+    case 'VIDEO':
+    case 'AUDIO':
+      return element.hasAttribute('controls')
+    default:
+      return element.shadowRoot !== null
+  }
+}

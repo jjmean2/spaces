@@ -170,6 +170,11 @@ test('an app shell: fixed regions around a docking layout', async () => {
     return [r.width, r.height]
   }
 
+  // Regions drawn without tabs are not tab panels; panes under tabs are.
+  expect(host('header').hasAttribute('role')).toBe(false)
+  expect(host('sidebar').hasAttribute('role')).toBe(false)
+  expect(host('one').getAttribute('role')).toBe('tabpanel')
+
   // No divider beside a fixed region; the inner layout keeps its own.
   expect(outerSashes()).toHaveLength(0)
   expect(inner!.querySelectorAll('[data-spaces-sash]')).toHaveLength(1)

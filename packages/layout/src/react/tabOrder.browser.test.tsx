@@ -245,3 +245,61 @@ test('leaving an iframe continues in the order on screen', async () => {
   // Out of the iframe's first element to the tab above it, then out of the layout.
   expect(backward.slice(backward.indexOf('frame:in1'))).toEqual(['frame:in1', 'tab-a', 'before'])
 })
+
+test('controls with stops of their own take as many presses as on a plain page', async () => {
+  const fields = (prefix: string) => (
+    <div>
+      <button type="button" data-testid={`${prefix}-start`}>
+        start
+      </button>
+      <input type="date" data-testid={`${prefix}-date`} />
+      <video controls data-testid={`${prefix}-video`} style={{ width: 200, height: 40 }} />
+      <button type="button" data-testid={`${prefix}-end`}>
+        end
+      </button>
+    </div>
+  )
+  // Pane b is first in the DOM and second on screen, so leaving pane a's last control in DOM
+  // order would skip b.
+  const store = createLayoutStore(createLayout({ root: group(['b']) }))
+  store.update((s) => addPane(s, 'a', { type: 'root', side: 'left' }))
+  await render(
+    <div>
+      {fields('plain')}
+      <Layout
+        store={store}
+        style={{ width: 900, height: 300 }}
+        renderContainer={chrome}
+        renderPane={(id) =>
+          id === 'a' ? (
+            <div>
+              {fields('pane')}
+              <input type="date" data-testid="last-date" />
+            </div>
+          ) : (
+            content(id)
+          )
+        }
+      />
+    </div>,
+  )
+  await frame()
+  const presses = async (from: string, to: string) => {
+    q(from).focus()
+    for (let count = 1; count <= 20; count++) {
+      await commands.pointer([['press', 'Tab']])
+      if (focused() === to) return count
+    }
+    return Infinity
+  }
+  const plain = await presses('plain-start', 'plain-end')
+  expect(plain).toBeGreaterThan(3)
+  expect(await presses('pane-start', 'pane-end')).toBe(plain)
+
+  // Out of the pane's last control: through its fields, then on to the next group on screen.
+  q('pane-end').focus()
+  const seen: (string | undefined)[] = []
+  for (let i = 0; i < 12 && seen.at(-1) !== 'tab-b'; i++) seen.push((await walk(1))[0])
+  expect(seen.filter((id) => id === 'last-date').length).toBeGreaterThan(1)
+  expect(seen.slice(-2)).toEqual(['sash', 'tab-b'])
+})
