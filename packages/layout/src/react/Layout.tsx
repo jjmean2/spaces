@@ -2,13 +2,14 @@ import {
   Fragment,
   memo,
   useCallback,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from 'react'
-import type { CSSProperties, PointerEvent, ReactNode } from 'react'
+import type { CSSProperties, FocusEvent, KeyboardEvent, PointerEvent, ReactNode, Ref } from 'react'
 import {
   EDGES,
   clampWindowRect,
@@ -53,6 +54,7 @@ import { createDragController } from './drag.ts'
 import type { DragController, DragState } from './drag.ts'
 import { Sash } from './Sash.tsx'
 import { useLayoutState } from './store.ts'
+import { SHOWS, isNestedLayout, logicalOrder } from './tabOrder.ts'
 import { WindowResize } from './WindowResize.tsx'
 import type { LayoutStore } from './store.ts'
 
@@ -126,6 +128,24 @@ export function Layout({
   const observer = useRef<ResizeObserver | null>(null)
   const tiledRef = useRef<HTMLDivElement>(null)
   const containers = useRef(new Map<string, HTMLElement>())
+  const startGuard = useRef<HTMLSpanElement>(null)
+  const endGuard = useRef<HTMLSpanElement>(null)
+  /** Set while a guard is focused only to let the browser carry Tab on past the layout. */
+  const passingThrough = useRef(false)
+  const lastPress = useRef(-Infinity)
+  const layoutId = useId()
+  const paneDomIds = useRef(new Map<PaneId, string>())
+  const paneDomId = useCallback(
+    (paneId: PaneId) => {
+      let id = paneDomIds.current.get(paneId)
+      if (!id) {
+        id = `${layoutId}pane-${paneDomIds.current.size}`
+        paneDomIds.current.set(paneId, id)
+      }
+      return id
+    },
+    [layoutId],
+  )
   const containerOf = useRef(new Map<HTMLElement, ContainerRef>())
   // The size of the layout, for keeping floating windows within reach when it shrinks.
   const [bounds, setBounds] = useState<{ width: number; height: number } | null>(null)
@@ -200,6 +220,7 @@ export function Layout({
     const originX = origin.left + root.clientLeft
     const originY = origin.top + root.clientTop
     const focused = focusedPane(current)
+    for (const slot of slots.current.values()) slot.removeAttribute(SHOWS)
 
     for (const [paneId, host] of hosts.current) {
       const ref = paneContainerRef(current, paneId)
@@ -214,15 +235,21 @@ export function Layout({
         host.style.zIndex = String(paneZ(current, ref))
         host.style.visibility = 'visible'
         host.inert = false
+        // Tie the slot to the content it shows, for keyboard order and for assistive technology.
+        slot.setAttribute(SHOWS, host.id)
+        slot.setAttribute('aria-owns', host.id)
       } else {
         // Keep the last size so hidden content does not reflow.
         host.style.visibility = 'hidden'
         host.inert = true
       }
       host.dataset.spacesVisible = String(shown)
+      const tab = drag.tabElement(paneId)
+      if (tab?.id) host.setAttribute('aria-labelledby', tab.id)
+      else host.removeAttribute('aria-labelledby')
       host.dataset.spacesFocused = String(paneId === focused)
     }
-  }, [store])
+  }, [store, drag])
 
   const measureBounds = useCallback(() => {
     const root = rootRef.current
@@ -245,6 +272,7 @@ export function Layout({
     () => ({
       store,
       drag,
+      paneDomId,
       windowRect(windowId) {
         const win = store.getState().floating.find((w) => w.id === windowId)
         if (!win) return undefined
@@ -261,7 +289,7 @@ export function Layout({
         }
       },
     }),
-    [store, drag, getObserver],
+    [store, drag, paneDomId, getObserver],
   )
 
   useLayoutEffect(() => {
@@ -485,6 +513,71 @@ export function Layout({
     )
   }
 
+  // The browser would follow the DOM, where all pane content comes after all chrome. Move focus
+  // in the order a person sees instead. Runs after handlers inside the layout, so a control that
+  // uses Tab itself, or a nested layout that has somewhere to go, has already dealt with it.
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const root = rootRef.current
+    if (!root || event.key !== 'Tab' || event.defaultPrevented) return
+    if (event.altKey || event.ctrlKey || event.metaKey || event.nativeEvent.isComposing) return
+    const active = document.activeElement
+    const order = logicalOrder(root, active)
+    // Resting on a guard, which happens after leaving an iframe at either end: turn back in.
+    if (active === endGuard.current && event.shiftKey) return moveTo(event, order[order.length - 1])
+    if (active === startGuard.current && !event.shiftKey) return moveTo(event, order[0])
+    const at = active instanceof HTMLElement ? order.indexOf(active) : -1
+    if (at === -1) return
+    const next = order[event.shiftKey ? at - 1 : at + 1]
+    if (next) return moveTo(event, next)
+    // Past the first or last stop. A nested layout leaves it to the layout around it. The
+    // outermost one steps onto the guard at that end and lets the browser carry on from there.
+    if (isNestedLayout(root)) return
+    const guard = event.shiftKey ? startGuard.current : endGuard.current
+    if (!guard) return
+    passingThrough.current = true
+    guard.focus({ preventScroll: true })
+    setTimeout(() => {
+      passingThrough.current = false
+    }, 0)
+  }
+
+  const moveTo = (event: KeyboardEvent<HTMLDivElement>, target: HTMLElement | undefined) => {
+    if (!target) return
+    event.preventDefault()
+    target.focus()
+  }
+
+  /**
+   * Tab pressed inside an iframe never reaches this document, so the browser moves on in DOM
+   * order when it leaves the iframe. Seen from here that is focus arriving with the iframe as
+   * where it came from. Send it to the stop that follows the iframe in visual order.
+   */
+  const correctAfterIframe = (event: FocusEvent<HTMLDivElement>) => {
+    const root = rootRef.current
+    const from = event.relatedTarget
+    if (!root || !(from instanceof HTMLIFrameElement) || !root.contains(from)) return
+    // A press moves focus too, and that is the user choosing a place.
+    if (performance.now() - lastPress.current < 500 || isNestedLayout(root)) return
+    const order = logicalOrder(root)
+    const at = order.indexOf(from)
+    if (at === -1) return
+    const forward = Boolean(from.compareDocumentPosition(event.target) & Node.DOCUMENT_POSITION_FOLLOWING)
+    const expected = order[forward ? at + 1 : at - 1]
+    if (expected === event.target) return
+    // With nothing further in that direction, rest on the guard: the next Tab leaves the layout.
+    ;(expected ?? (forward ? endGuard.current : startGuard.current))?.focus()
+  }
+
+  /** Focus reached a guard from outside the layout: go to the first or last stop in visual order. */
+  const enterAt = (edge: 'start' | 'end', from: EventTarget | null) => {
+    const root = rootRef.current
+    if (!root || passingThrough.current) return
+    if (from instanceof Node && root.contains(from)) return
+    const order = logicalOrder(root)
+    const target = edge === 'start' ? order[0] : order[order.length - 1]
+    target?.focus()
+  }
+
   const rootNode = state.root && !isNodeVacant(state, state.root) ? state.root : null
   // Rendered in a stable order; stacking is done with z-index so raising a window moves no DOM.
   const windows = state.floating
@@ -499,9 +592,17 @@ export function Layout({
         className={className}
         data-spaces-layout=""
         style={{ ...style, ...FILL, position: 'relative', isolation: 'isolate', overflow: 'hidden' }}
-        onPointerDownCapture={(event) => noteFocus(event.target)}
-        onFocusCapture={(event) => noteFocus(event.target)}
+        onPointerDownCapture={(event) => {
+          lastPress.current = performance.now()
+          noteFocus(event.target)
+        }}
+        onFocusCapture={(event) => {
+          noteFocus(event.target)
+          correctAfterIframe(event)
+        }}
+        onKeyDown={onKeyDown}
       >
+        <FocusGuard guardRef={startGuard} edge="start" onFocus={(event) => enterAt('start', event.relatedTarget)} />
         {pinned('left')}
         <div style={{ ...FILL, flex: '1 1 0', flexDirection: 'column', position: 'relative' }}>
           {pinned('top')}
@@ -552,12 +653,46 @@ export function Layout({
         })}
 
         {order.current.map((paneId) => (
-          <PaneHost key={paneId} paneId={paneId} store={store} register={registerHost} render={renderPane} />
+          <PaneHost
+            key={paneId}
+            paneId={paneId}
+            domId={paneDomId(paneId)}
+            store={store}
+            register={registerHost}
+            render={renderPane}
+          />
         ))}
 
         <DropIndicator drag={drag} />
+        <FocusGuard guardRef={endGuard} edge="end" onFocus={(event) => enterAt('end', event.relatedTarget)} />
       </div>
     </LayoutContext.Provider>
+  )
+}
+
+/**
+ * An invisible stop at one end of the layout. Tab arriving from outside lands
+ * on it and is sent to the first or last stop in visual order; Tab leaving the
+ * layout steps onto it so the browser continues from the layout's edge.
+ */
+function FocusGuard({
+  guardRef,
+  edge,
+  onFocus,
+}: {
+  guardRef: Ref<HTMLSpanElement>
+  edge: 'start' | 'end'
+  onFocus(event: FocusEvent<HTMLSpanElement>): void
+}) {
+  return (
+    <span
+      ref={guardRef}
+      tabIndex={0}
+      aria-hidden="true"
+      data-spaces-focus-guard={edge}
+      onFocus={onFocus}
+      style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', outline: 'none', opacity: 0 }}
+    />
   )
 }
 
@@ -595,13 +730,14 @@ function paneZ(state: LayoutState, ref: ContainerRef): number {
 
 interface PaneHostProps {
   paneId: PaneId
+  domId: string
   store: LayoutStore
   register(paneId: PaneId, element: HTMLElement | null): void
   render(paneId: PaneId): ReactNode
 }
 
 /** One stable element per pane. Its position is written by `sync`, not by React. */
-const PaneHost = memo(function PaneHost({ paneId, store, register, render }: PaneHostProps) {
+const PaneHost = memo(function PaneHost({ paneId, domId, store, register, render }: PaneHostProps) {
   const ref = useCallback((element: HTMLElement | null) => register(paneId, element), [paneId, register])
   const raise = () => {
     const placement = store.getState().panes[paneId]?.placement
@@ -610,8 +746,12 @@ const PaneHost = memo(function PaneHost({ paneId, store, register, render }: Pan
   return (
     <div
       ref={ref}
+      id={domId}
+      role="tabpanel"
+      // Focusable by a press, so Tab continues from the pane that was pressed, but not a stop itself.
+      tabIndex={-1}
       data-spaces-pane={paneId}
-      style={{ position: 'absolute', overflow: 'hidden', visibility: 'hidden' }}
+      style={{ position: 'absolute', overflow: 'hidden', visibility: 'hidden', outline: 'none' }}
       onPointerDownCapture={raise}
     >
       <PaneContext.Provider value={paneId}>{render(paneId)}</PaneContext.Provider>
@@ -684,15 +824,19 @@ export function useWindowDrag(windowId: WindowId) {
  * dragging to drop the pane as a floating window.
  */
 export function useTabDrag(paneId: PaneId) {
-  const { drag } = useInternals('useTabDrag')
+  const { drag, paneDomId } = useInternals('useTabDrag')
   const dragging = useSyncExternalStore(
     drag.subscribe,
     () => drag.getState()?.paneId === paneId,
     () => false,
   )
   const ref = useCallback((element: HTMLElement | null) => drag.registerTab(paneId, element), [drag, paneId])
+  const panel = paneDomId(paneId)
   return {
     ref,
+    // Names the pane's content after its tab, and the tab as what controls it.
+    id: `${panel}-tab`,
+    'aria-controls': panel,
     'data-spaces-tab': paneId,
     'data-dragging': dragging || undefined,
     style: { touchAction: 'none' } as CSSProperties,

@@ -6,6 +6,8 @@ import type { LayoutStore } from './store.ts'
 export interface LayoutInternals {
   store: LayoutStore
   drag: DragController
+  /** The DOM id of the element that holds a pane's content. */
+  paneDomId(paneId: PaneId): string
   /** Where a floating window is drawn, which can differ from its stored rectangle. */
   windowRect(windowId: WindowId): Rect | undefined
   registerSlot(key: string, element: HTMLElement | null): void

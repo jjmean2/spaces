@@ -25,6 +25,8 @@ export interface DragController {
   getState(): DragState | null
   subscribe(listener: () => void): () => void
   registerTab(paneId: PaneId, element: HTMLElement | null): void
+  /** The tab element registered for a pane, if its container draws one. */
+  tabElement(paneId: PaneId): HTMLElement | undefined
   begin(paneId: PaneId, event: ReactPointerEvent<HTMLElement>): void
 }
 
@@ -114,6 +116,7 @@ export function createDragController(env: DragEnvironment): DragController {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
+    tabElement: (paneId) => tabs.get(paneId),
     registerTab(paneId, element) {
       if (element) {
         tabs.set(paneId, element)
