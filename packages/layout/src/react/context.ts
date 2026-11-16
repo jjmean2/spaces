@@ -1,11 +1,13 @@
 import { createContext, useContext } from 'react'
-import type { ContainerRef, PaneId } from '../core/index.ts'
+import type { ContainerRef, PaneId, Rect, WindowId } from '../core/index.ts'
 import type { DragController } from './drag.ts'
 import type { LayoutStore } from './store.ts'
 
 export interface LayoutInternals {
   store: LayoutStore
   drag: DragController
+  /** Where a floating window is drawn, which can differ from its stored rectangle. */
+  windowRect(windowId: WindowId): Rect | undefined
   registerSlot(key: string, element: HTMLElement | null): void
 }
 

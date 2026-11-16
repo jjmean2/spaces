@@ -68,7 +68,7 @@ export function Workspace({ initial, restored }: { initial: LayoutState; restore
         <button type="button" onClick={reset}>
           Reset layout
         </button>
-        <span className="label">Drag a tab to move it; hold Shift to float it.</span>
+        <span className="label">Drag a tab to move it; hold Shift to float it. Resize a floating window by its edges.</span>
         <span className="label">Closed docks:</span>
         {EDGES.filter((edge) => state.edges[edge].panes.length > 0 && !state.edges[edge].open).map((edge) => (
           <button key={edge} type="button" onClick={() => store.update((s) => updateEdge(s, edge, { open: true }))}>
@@ -82,7 +82,13 @@ export function Workspace({ initial, restored }: { initial: LayoutState; restore
           </button>
         ))}
       </header>
-      <Layout store={store} className="layout" renderPane={renderPane} renderContainer={renderContainer} />
+      <Layout
+        store={store}
+        className="layout"
+        sashSize={5}
+        renderPane={renderPane}
+        renderContainer={renderContainer}
+      />
     </div>
   )
 }
@@ -93,14 +99,14 @@ const renderContainer = (props: ContainerRenderProps) => <Chrome {...props} />
 
 const DOCK_TARGETS: Edge[] = ['left', 'bottom', 'right']
 
-function Chrome({ container, panes, active }: ContainerRenderProps) {
+function Chrome({ container, panes, active, focused }: ContainerRenderProps) {
   const store = useLayoutStore()
   const state = useLayoutState(store)
   const act = (fn: (s: LayoutState) => LayoutState) => () => store.update(fn)
   const dock = container.type === 'edge' ? state.edges[container.edge] : null
 
   return (
-    <section className="chrome" data-kind={container.type}>
+    <section className="chrome" data-kind={container.type} data-focused={focused}>
       <div className="tabs" role="tablist">
         {container.type === 'floating' && <WindowGrip id={container.id} />}
         {panes.map((id) => (

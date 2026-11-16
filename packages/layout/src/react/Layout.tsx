@@ -1,15 +1,29 @@
-import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import type { CSSProperties, PointerEvent, ReactNode } from 'react'
 import {
   EDGES,
+  clampWindowRect,
   findNode,
+  focusPane,
+  focusedPane,
   groups,
   isNodeVacant,
   isPaneVisible,
+  nodeLimits,
   paneContainerRef,
   presentPanes,
   raiseWindow,
   resizePair,
+  resizeWindowRect,
   resolveDrop,
   setWeights,
   setWindowRect,
@@ -21,7 +35,9 @@ import type {
   Edge,
   LayoutNode,
   LayoutState,
+  Limits,
   PaneId,
+  Rect,
   WindowId,
 } from '../core/index.ts'
 import {
@@ -30,7 +46,6 @@ import {
   PaneContext,
   containerKey,
   useInternals,
-  useLayoutStore,
   useSlotRegistration,
 } from './context.ts'
 import type { LayoutInternals } from './context.ts'
@@ -38,6 +53,7 @@ import { createDragController } from './drag.ts'
 import type { DragController, DragState } from './drag.ts'
 import { Sash } from './Sash.tsx'
 import { useLayoutState } from './store.ts'
+import { WindowResize } from './WindowResize.tsx'
 import type { LayoutStore } from './store.ts'
 
 export interface ContainerRenderProps {
@@ -46,6 +62,8 @@ export interface ContainerRenderProps {
   /** The panes shown in it, in tab order. */
   panes: PaneId[]
   active: PaneId | null
+  /** Whether the pane that last had the user's attention is the one shown here. */
+  focused: boolean
 }
 
 export interface LayoutProps {
@@ -57,8 +75,12 @@ export interface LayoutProps {
    * Render a `<PaneSlot />` where the active pane's content should appear.
    */
   renderContainer(props: ContainerRenderProps): ReactNode
-  /** Smallest size in pixels a divider can shrink a region to. */
+  /** Smallest size in pixels a divider can shrink a region to. A group's own `size` limits come on top. */
   minSize?: number
+  /** Thickness of the dividers in pixels. */
+  sashSize?: number
+  /** Smallest size a floating window can be resized to. */
+  minWindowSize?: { width: number; height: number }
   /**
    * Decides where a dragged tab would land for a pointer position. Defaults to
    * `resolveDrop`; wrap it to change the zones or to forbid some drops.
@@ -70,6 +92,8 @@ export interface LayoutProps {
   style?: CSSProperties
 }
 
+const DEFAULT_MIN_WINDOW_SIZE = { width: 160, height: 100 }
+
 const FILL: CSSProperties = { display: 'flex', minWidth: 0, minHeight: 0 }
 
 /** Stacking order inside the layout root. Chrome and pane content interleave, so both are set here. */
@@ -77,8 +101,9 @@ const Z = {
   tiledPane: 1,
   overlayChrome: 2,
   overlayPane: 3,
-  windowChrome: (index: number) => 10 + index * 2,
-  windowPane: (index: number) => 11 + index * 2,
+  windowChrome: (index: number) => 10 + index * 3,
+  windowPane: (index: number) => 11 + index * 3,
+  windowResize: (index: number) => 12 + index * 3,
   dropIndicator: 1_000_000,
 }
 
@@ -87,6 +112,8 @@ export function Layout({
   renderPane,
   renderContainer,
   minSize = 48,
+  sashSize = 4,
+  minWindowSize = DEFAULT_MIN_WINDOW_SIZE,
   resolveDrop: resolveDropProp = resolveDrop,
   dragThreshold = 5,
   className,
@@ -99,6 +126,12 @@ export function Layout({
   const observer = useRef<ResizeObserver | null>(null)
   const tiledRef = useRef<HTMLDivElement>(null)
   const containers = useRef(new Map<string, HTMLElement>())
+  const containerOf = useRef(new Map<HTMLElement, ContainerRef>())
+  // The size of the layout, for keeping floating windows within reach when it shrinks.
+  const [bounds, setBounds] = useState<{ width: number; height: number } | null>(null)
+  const boundsRef = useRef(bounds)
+  boundsRef.current = bounds
+  const drawnRect = (rect: Rect) => (bounds ? clampWindowRect(rect, bounds) : rect)
   const containerRefs = useRef(new Map<string, (element: HTMLElement | null) => void>())
 
   /** A stable ref callback per container, recording its element for drop hit-testing. */
@@ -107,8 +140,14 @@ export function Layout({
     let callback = containerRefs.current.get(key)
     if (!callback) {
       callback = (element) => {
-        if (element) containers.current.set(key, element)
-        else containers.current.delete(key)
+        const previous = containers.current.get(key)
+        if (previous) containerOf.current.delete(previous)
+        if (element) {
+          containers.current.set(key, element)
+          containerOf.current.set(element, ref)
+        } else {
+          containers.current.delete(key)
+        }
       }
       containerRefs.current.set(key, callback)
     }
@@ -160,6 +199,7 @@ export function Layout({
     const origin = root.getBoundingClientRect()
     const originX = origin.left + root.clientLeft
     const originY = origin.top + root.clientTop
+    const focused = focusedPane(current)
 
     for (const [paneId, host] of hosts.current) {
       const ref = paneContainerRef(current, paneId)
@@ -180,20 +220,36 @@ export function Layout({
         host.inert = true
       }
       host.dataset.spacesVisible = String(shown)
+      host.dataset.spacesFocused = String(paneId === focused)
     }
   }, [store])
 
+  const measureBounds = useCallback(() => {
+    const root = rootRef.current
+    if (!root) return
+    const { clientWidth: width, clientHeight: height } = root
+    setBounds((previous) => (previous?.width === width && previous.height === height ? previous : { width, height }))
+  }, [])
+
   const getObserver = useCallback(() => {
     if (!observer.current && typeof ResizeObserver !== 'undefined') {
-      observer.current = new ResizeObserver(() => sync())
+      observer.current = new ResizeObserver(() => {
+        measureBounds()
+        sync()
+      })
     }
     return observer.current
-  }, [sync])
+  }, [sync, measureBounds])
 
   const internals = useMemo<LayoutInternals>(
     () => ({
       store,
       drag,
+      windowRect(windowId) {
+        const win = store.getState().floating.find((w) => w.id === windowId)
+        if (!win) return undefined
+        return boundsRef.current ? clampWindowRect(win.rect, boundsRef.current) : win.rect
+      },
       registerSlot(key, element) {
         const previous = slots.current.get(key)
         if (previous && previous !== element) getObserver()?.unobserve(previous)
@@ -211,13 +267,14 @@ export function Layout({
   useLayoutEffect(() => {
     const root = rootRef.current
     if (root) getObserver()?.observe(root)
+    measureBounds()
     // Slots register through refs, which are not attached again when this effect is re-run.
     for (const slot of slots.current.values()) getObserver()?.observe(slot)
     return () => {
       observer.current?.disconnect()
       observer.current = null
     }
-  }, [getObserver])
+  }, [getObserver, measureBounds])
 
   // After every commit: the tree, an edge or a window may have moved a slot without resizing it.
   useLayoutEffect(sync)
@@ -234,20 +291,46 @@ export function Layout({
     else hosts.current.delete(paneId)
   }, [])
 
-  const renderChrome = (ref: ContainerRef) => (
-    <ContainerContext.Provider value={ref}>
-      {renderContainer({
-        container: ref,
-        panes: presentPanes(state, ref),
-        active: (ref.type === 'edge'
-          ? state.edges[ref.edge]
-          : ref.type === 'floating'
-            ? state.floating.find((w) => w.id === ref.id)
-            : (findNode(state.root, ref.id) as { active: PaneId | null } | undefined)
-        )?.active ?? null,
-      })}
-    </ContainerContext.Provider>
-  )
+  const focused = focusedPane(state)
+
+  const activeOf = (current: LayoutState, ref: ContainerRef): PaneId | null =>
+    (ref.type === 'edge'
+      ? current.edges[ref.edge]
+      : ref.type === 'floating'
+        ? current.floating.find((w) => w.id === ref.id)
+        : (findNode(current.root, ref.id) as { active: PaneId | null } | undefined)
+    )?.active ?? null
+
+  const renderChrome = (ref: ContainerRef) => {
+    const active = activeOf(state, ref)
+    return (
+      <ContainerContext.Provider value={ref}>
+        {renderContainer({
+          container: ref,
+          panes: presentPanes(state, ref),
+          active,
+          focused: active !== null && active === focused,
+        })}
+      </ContainerContext.Provider>
+    )
+  }
+
+  /** Record which pane a press or a focus change landed in: its content, or the chrome around it. */
+  const noteFocus = (target: EventTarget) => {
+    const root = rootRef.current
+    if (!root || !(target instanceof Element)) return
+    for (let element: Element | null = target; element && element !== root; element = element.parentElement) {
+      const current = store.getState()
+      // A host is a direct child of the root. One further down belongs to a nested layout.
+      const paneId = element.parentElement === root ? (element as HTMLElement).dataset.spacesPane : undefined
+      const ref = containerOf.current.get(element as HTMLElement)
+      const id = paneId ?? (ref && activeOf(current, ref))
+      if (id && current.panes[id]) {
+        store.update((s) => focusPane(s, id))
+        return
+      }
+    }
+  }
 
   const edgeShown = (edge: Edge) => state.edges[edge].open && state.edges[edge].active !== null
 
@@ -260,6 +343,7 @@ export function Layout({
     const sash = (
       <Sash
         kind="edge"
+        size={sashSize}
         axis={horizontal ? 'x' : 'y'}
         label={`Resize ${edge} dock`}
         begin={() => {
@@ -303,15 +387,23 @@ export function Layout({
   const pinned = (edge: Edge) => (state.edges[edge].mode === 'pinned' ? renderEdge(edge) : null)
   const overlaid = (edge: Edge) => (state.edges[edge].mode === 'overlay' ? renderEdge(edge) : null)
 
+  const limitStyle = (limits: Limits): CSSProperties => ({
+    minWidth: limits.minWidth,
+    minHeight: limits.minHeight,
+    ...(Number.isFinite(limits.maxWidth) ? { maxWidth: limits.maxWidth } : {}),
+    ...(Number.isFinite(limits.maxHeight) ? { maxHeight: limits.maxHeight } : {}),
+  })
+
   const renderNode = (node: LayoutNode, grow: number): ReactNode => {
     const flex = `${grow} 1 0px`
+    const limits = limitStyle(nodeLimits(state, node, sashSize))
     if (node.type === 'group') {
       return (
         <div
           key={node.id}
           ref={containerRef({ type: 'group', id: node.id })}
           data-spaces-group={node.id}
-          style={{ ...FILL, flex }}
+          style={{ ...FILL, flex, ...limits }}
         >
           {renderChrome({ type: 'group', id: node.id })}
         </div>
@@ -320,12 +412,18 @@ export function Layout({
     const shown = node.children.filter((child) => !isNodeVacant(state, child))
     const total = shown.reduce((sum, child) => sum + child.weight, 0)
     const axis = node.orientation === 'row' ? 'x' : 'y'
+    // Each shown child's limits along the split, in pixels.
+    const range = shown.map((child) => {
+      const l = nodeLimits(state, child, sashSize)
+      return axis === 'x' ? { min: l.minWidth, max: l.maxWidth } : { min: l.minHeight, max: l.maxHeight }
+    })
+    const fixed = (index: number) => range[index]!.min === range[index]!.max
     return (
       <div
         key={node.id}
         data-spaces-split={node.id}
         data-orientation={node.orientation}
-        style={{ ...FILL, flex, flexDirection: node.orientation }}
+        style={{ ...FILL, flex, ...limits, flexDirection: node.orientation }}
       >
         {shown.map((child, index) => {
           const next = shown[index + 1]
@@ -333,25 +431,50 @@ export function Layout({
             <Fragment key={child.id}>
               {/* Grow factors are scaled to add up to 100: a total below 1 would not fill the split. */}
               {renderNode(child, (child.weight / total) * 100)}
-              {next && (
+              {/* A region of fixed size has nothing to drag. */}
+              {next && !fixed(index) && !fixed(index + 1) && (
                 <Sash
                   kind="split"
+                  size={sashSize}
                   axis={axis}
                   value={(child.weight / (child.weight + next.weight)) * 100}
                   begin={(element) => {
-                    const before = element.previousElementSibling?.getBoundingClientRect()
-                    const after = element.nextElementSibling?.getBoundingClientRect()
-                    if (!before || !after) return null
-                    const extent = (rect: DOMRect) => (axis === 'x' ? rect.width : rect.height)
+                    const regions = [...(element.parentElement?.children ?? [])].filter(
+                      (sibling) => !sibling.hasAttribute('data-spaces-sash'),
+                    )
+                    if (regions.length !== shown.length) return null
+                    const sizes = regions.map((region) => {
+                      const rect = region.getBoundingClientRect()
+                      return axis === 'x' ? rect.width : rect.height
+                    })
+                    const measured = sizes.reduce((sum, size) => sum + size, 0)
+                    if (!(measured > 0)) return null
+                    // A sibling held at a limit is not the size its weight asks for. Restate every
+                    // weight from what is on screen, so the divider follows the pointer. The total
+                    // is kept, so a sibling that is away keeps its share.
+                    const weights = sizes.map((size) => (size / measured) * total)
+                    const bound = (i: number) => ({
+                      min: Math.min(Math.max(range[i]!.min, minSize), range[i]!.max),
+                      max: range[i]!.max,
+                    })
+                    const [a, b] = [bound(index), bound(index + 1)]
                     return {
-                      ids: [child.id, next.id] as const,
-                      weights: [child.weight, next.weight] as const,
-                      sizes: [extent(before), extent(after)] as const,
+                      ids: shown.map((sibling) => sibling.id),
+                      weights,
+                      pair: {
+                        weights: [weights[index]!, weights[index + 1]!] as const,
+                        sizes: [sizes[index]!, sizes[index + 1]!] as const,
+                        min: [a.min, b.min] as const,
+                        max: [a.max, b.max] as const,
+                      },
                     }
                   }}
                   apply={(start, delta) => {
-                    const [a, b] = resizePair({ ...start, delta, min: minSize })
-                    store.update((s) => setWeights(s, { [start.ids[0]]: a, [start.ids[1]]: b }))
+                    const [a, b] = resizePair({ ...start.pair, delta })
+                    const weights = Object.fromEntries(start.ids.map((id, i) => [id, start.weights[i]!]))
+                    weights[start.ids[index]!] = a
+                    weights[start.ids[index + 1]!] = b
+                    store.update((s) => setWeights(s, weights))
                   }}
                 />
               )}
@@ -376,6 +499,8 @@ export function Layout({
         className={className}
         data-spaces-layout=""
         style={{ ...style, ...FILL, position: 'relative', isolation: 'isolate', overflow: 'hidden' }}
+        onPointerDownCapture={(event) => noteFocus(event.target)}
+        onFocusCapture={(event) => noteFocus(event.target)}
       >
         {pinned('left')}
         <div style={{ ...FILL, flex: '1 1 0', flexDirection: 'column', position: 'relative' }}>
@@ -391,25 +516,40 @@ export function Layout({
         {overlaid('left')}
         {overlaid('right')}
 
-        {windows.map(({ win, index }) => (
-          <div
-            key={win.id}
-            ref={containerRef({ type: 'floating', id: win.id })}
-            data-spaces-window={win.id}
-            style={{
-              ...FILL,
-              position: 'absolute',
-              left: win.rect.x,
-              top: win.rect.y,
-              width: win.rect.width,
-              height: win.rect.height,
-              zIndex: Z.windowChrome(index),
-            }}
-            onPointerDownCapture={() => store.update((s) => raiseWindow(s, win.id))}
-          >
-            {renderChrome({ type: 'floating', id: win.id })}
-          </div>
-        ))}
+        {windows.map(({ win, index }) => {
+          const rect = drawnRect(win.rect)
+          return (
+            <Fragment key={win.id}>
+              <div
+                ref={containerRef({ type: 'floating', id: win.id })}
+                data-spaces-window={win.id}
+                style={{
+                  ...FILL,
+                  position: 'absolute',
+                  left: rect.x,
+                  top: rect.y,
+                  width: rect.width,
+                  height: rect.height,
+                  zIndex: Z.windowChrome(index),
+                }}
+                onPointerDownCapture={() => store.update((s) => raiseWindow(s, win.id))}
+              >
+                {renderChrome({ type: 'floating', id: win.id })}
+              </div>
+              <WindowResize
+                rect={rect}
+                zIndex={Z.windowResize(index)}
+                onResize={(start, edges, dx, dy) =>
+                  store.update((s) =>
+                    s.floating.some((w) => w.id === win.id)
+                      ? setWindowRect(s, win.id, resizeWindowRect(start, edges, dx, dy, minWindowSize))
+                      : s,
+                  )
+                }
+              />
+            </Fragment>
+          )
+        })}
 
         {order.current.map((paneId) => (
           <PaneHost key={paneId} paneId={paneId} store={store} register={registerHost} render={renderPane} />
@@ -503,26 +643,30 @@ export function PaneSlot({ className, style }: PaneSlotProps) {
  * Spread them onto the element: `<header {...useWindowDrag(windowId)} />`.
  */
 export function useWindowDrag(windowId: WindowId) {
-  const store = useLayoutStore()
-  const drag = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
+  const { store, windowRect } = useInternals('useWindowDrag')
+  const drag = useRef<{ x: number; y: number; rect: Rect } | null>(null)
   return {
     style: { touchAction: 'none' } as CSSProperties,
     onPointerDown(event: PointerEvent<HTMLElement>) {
-      const win = store.getState().floating.find((w) => w.id === windowId)
-      if (!win || event.button !== 0) return
+      // Start from where the window is drawn, which is not where it is stored if the layout
+      // has shrunk since. Starting from the stored place would make it jump.
+      const rect = windowRect(windowId)
+      if (!rect || event.button !== 0) return
       event.currentTarget.setPointerCapture(event.pointerId)
-      drag.current = { x: event.clientX, y: event.clientY, left: win.rect.x, top: win.rect.y }
+      drag.current = { x: event.clientX, y: event.clientY, rect }
     },
     onPointerMove(event: PointerEvent<HTMLElement>) {
       const start = drag.current
       if (!start) return
-      store.update((s) => {
-        const win = s.floating.find((w) => w.id === windowId)
-        if (!win) return s
-        const x = Math.max(0, start.left + event.clientX - start.x)
-        const y = Math.max(0, start.top + event.clientY - start.y)
-        return setWindowRect(s, windowId, { ...win.rect, x, y })
-      })
+      store.update((s) =>
+        s.floating.some((w) => w.id === windowId)
+          ? setWindowRect(s, windowId, {
+              ...start.rect,
+              x: start.rect.x + event.clientX - start.x,
+              y: Math.max(0, start.rect.y + event.clientY - start.y),
+            })
+          : s,
+      )
     },
     onPointerUp() {
       drag.current = null
@@ -532,7 +676,6 @@ export function useWindowDrag(windowId: WindowId) {
     },
   }
 }
-
 
 /**
  * Props that make an element a draggable tab for a pane. Spread them onto the

@@ -16,7 +16,7 @@ button:hover { border-color: var(--accent); }
 .app { display: flex; flex-direction: column; height: 100%; }
 .toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .toolbar .label { color: var(--muted); margin-left: 8px; }
-.layout { flex: 1 1 0; min-height: 0; --spaces-sash-size: 5px; }
+.layout { flex: 1 1 0; min-height: 0; }
 
 [data-spaces-sash] { background: var(--line); }
 [data-spaces-sash]:hover, [data-spaces-sash]:focus-visible { background: var(--accent); outline: none; }
@@ -45,3 +45,5 @@ button:hover { border-color: var(--accent); }
   transition: left 80ms, top 80ms, width 80ms, height 80ms;
 }
 [data-spaces-drop-indicator][data-zone='tab'] { background: var(--accent); outline: none; border-radius: 1px; }
+
+.chrome[data-focused='true'] .tab[aria-selected='true'] { border-color: var(--accent); color: var(--accent); }

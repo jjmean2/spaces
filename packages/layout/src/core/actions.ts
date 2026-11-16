@@ -20,6 +20,7 @@ import type {
   NodeId,
   PaneId,
   Rect,
+  SizeConstraints,
   Target,
   WindowId,
 } from './types.ts'
@@ -40,6 +41,7 @@ function produce(state: LayoutState, recipe: (draft: LayoutState) => void): Layo
 function normalize(draft: LayoutState): void {
   draft.root = normalizeTree(draft.root)
   draft.floating = draft.floating.filter((w) => w.panes.length > 0)
+  if (draft.focus) draft.focus = [...new Set(draft.focus)].filter((id) => id in draft.panes)
 
   const refs: ContainerRef[] = [
     ...[...groups(draft.root)].map((g): ContainerRef => ({ type: 'group', id: g.id })),
@@ -62,6 +64,11 @@ function nextActive(container: Container, present: PaneId[]): PaneId | null {
   const after = container.panes.slice(from + 1).find((id) => present.includes(id))
   if (after) return after
   return container.panes.slice(0, from).findLast((id) => present.includes(id)) ?? null
+}
+
+/** Record the pane as the most recently focused. */
+function touch(draft: LayoutState, paneId: PaneId): void {
+  draft.focus = [paneId, ...(draft.focus ?? []).filter((id) => id !== paneId)]
 }
 
 function newId(draft: LayoutState, prefix: string): string {
@@ -123,6 +130,7 @@ function listIndex(draft: LayoutState, ref: ContainerRef, index: number | undefi
 
 function place(draft: LayoutState, paneId: PaneId, target: Target): void {
   const pane = draft.panes[paneId]!
+  touch(draft, paneId)
 
   switch (target.type) {
     case 'group': {
@@ -242,8 +250,8 @@ export function movePane(state: LayoutState, paneId: PaneId, target: Target): La
 /**
  * Return a docked, floating or hidden pane to the tiled tree. It goes back to
  * the group it left. A pane that never had one, or whose group has since been
- * removed, joins the first group that shows a pane, or becomes the tree's
- * first group.
+ * removed, joins the group of the most recently focused tiled pane, else the
+ * first group that shows a pane, else it becomes the tree's first group.
  */
 export function restorePane(state: LayoutState, paneId: PaneId): LayoutState {
   requirePane(state, paneId)
@@ -255,11 +263,16 @@ export function restorePane(state: LayoutState, paneId: PaneId): LayoutState {
       pane.placement = { type: 'tiled' }
       pane.hidden = false
       home.active = paneId
+      touch(draft, paneId)
       return
     }
-    const fallback = [...groups(draft.root)].find(
+    const shown = [...groups(draft.root)].filter(
       (g) => presentPanes(draft, { type: 'group', id: g.id }).length > 0,
     )
+    const recent = (draft.focus ?? [])
+      .map((id) => shown.find((g) => presentPanes(draft, { type: 'group', id: g.id }).includes(id)))
+      .find((g) => g !== undefined)
+    const fallback = recent ?? shown[0]
     place(
       draft,
       paneId,
@@ -292,6 +305,7 @@ export function showPane(state: LayoutState, paneId: PaneId): LayoutState {
   return produce(state, (draft) => {
     const pane = draft.panes[paneId]!
     pane.hidden = false
+    touch(draft, paneId)
     const ref = paneContainerRef(draft, paneId)
     if (!ref) return
     getContainer(draft, ref)!.active = paneId
@@ -304,6 +318,30 @@ function raise(draft: LayoutState, windowId: WindowId): void {
   const index = draft.floating.findIndex((w) => w.id === windowId)
   if (index === -1) throw new Error(`Unknown window "${windowId}"`)
   draft.floating.push(...draft.floating.splice(index, 1))
+}
+
+/**
+ * Record that the pane has the user's attention, without changing where it is
+ * or which tab is active. The layout calls this when focus or a press lands in
+ * a pane.
+ */
+export function focusPane(state: LayoutState, paneId: PaneId): LayoutState {
+  requirePane(state, paneId)
+  if (state.focus?.[0] === paneId) return state
+  return produce(state, (draft) => touch(draft, paneId))
+}
+
+/** Set or clear the size limits of a group. */
+export function setGroupSize(
+  state: LayoutState,
+  groupId: NodeId,
+  size: SizeConstraints | undefined,
+): LayoutState {
+  return produce(state, (draft) => {
+    const group = requireGroup(draft, groupId)
+    if (size && Object.keys(size).length > 0) group.size = size
+    else delete group.size
+  })
 }
 
 /** Bring a floating window to the front. */

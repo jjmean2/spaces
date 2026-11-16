@@ -12,12 +12,14 @@ export interface SashProps<Ctx> {
   value?: number
   label?: string
   kind: 'split' | 'edge'
+  /** Thickness in pixels. */
+  size: number
 }
 
 const KEY_STEP = 16
 
 /** A divider that is dragged with the pointer or moved with the arrow keys. */
-export function Sash<Ctx>({ axis, begin, apply, value, label, kind }: SashProps<Ctx>) {
+export function Sash<Ctx>({ axis, begin, apply, value, label, kind, size }: SashProps<Ctx>) {
   const drag = useRef<{ context: Ctx; start: number } | null>(null)
   const position = (event: PointerEvent) => (axis === 'x' ? event.clientX : event.clientY)
 
@@ -60,7 +62,7 @@ export function Sash<Ctx>({ axis, begin, apply, value, label, kind }: SashProps<
       data-spaces-sash={kind}
       data-axis={axis}
       style={{
-        flex: '0 0 var(--spaces-sash-size, 4px)',
+        flex: `0 0 ${size}px`,
         cursor: axis === 'x' ? 'col-resize' : 'row-resize',
         touchAction: 'none',
         userSelect: 'none',

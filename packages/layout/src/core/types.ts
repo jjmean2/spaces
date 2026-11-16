@@ -14,6 +14,18 @@ export interface Rect {
 }
 
 /**
+ * Limits on the size of a group, in pixels. A dimension whose minimum equals its
+ * maximum is fixed: it gets no divider and keeps its size when the layout
+ * resizes, which is how a header bar or a sidebar of set width is described.
+ */
+export interface SizeConstraints {
+  minWidth?: number
+  maxWidth?: number
+  minHeight?: number
+  maxHeight?: number
+}
+
+/**
  * A leaf of the tiled tree: an ordered list of panes shown one at a time.
  *
  * `panes` lists every pane whose home is this group, including panes that are
@@ -28,6 +40,7 @@ export interface GroupNode {
   weight: number
   panes: PaneId[]
   active: PaneId | null
+  size?: SizeConstraints
 }
 
 export interface SplitNode {
@@ -78,6 +91,8 @@ export interface LayoutState {
   /** Back to front: the last window is on top. */
   floating: FloatingWindow[]
   panes: Record<PaneId, PaneState>
+  /** Panes in the order they were last focused, most recent first. */
+  focus?: PaneId[]
   /** Counter for generated node and window ids. */
   nextId: number
 }

@@ -24,6 +24,13 @@ export function validateLayout(state: LayoutState): string[] {
       }
     } else {
       if (node.panes.length === 0) errors.push(`group "${node.id}" is empty`)
+      const size = node.size ?? {}
+      for (const value of Object.values(size)) {
+        if (!(Number.isFinite(value) && value >= 0)) errors.push(`group "${node.id}" has an invalid size limit`)
+      }
+      if ((size.minWidth ?? 0) > (size.maxWidth ?? Infinity) || (size.minHeight ?? 0) > (size.maxHeight ?? Infinity)) {
+        errors.push(`group "${node.id}" has a minimum size above its maximum`)
+      }
       for (const id of node.panes) {
         if (homeOf.has(id)) errors.push(`pane "${id}" is in more than one group`)
         homeOf.set(id, node.id)
@@ -85,6 +92,12 @@ export function validateLayout(state: LayoutState): string[] {
         errors.push(`pane "${id}" is listed in window "${win.id}" but placed elsewhere`)
       }
     }
+  }
+
+  const focus = state.focus ?? []
+  if (new Set(focus).size !== focus.length) errors.push('the focus history lists a pane twice')
+  for (const id of focus) {
+    if (!state.panes[id]) errors.push(`the focus history lists unknown pane "${id}"`)
   }
 
   return errors

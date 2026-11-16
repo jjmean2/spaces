@@ -67,6 +67,11 @@ export function isNodeVacant(state: LayoutState, node: LayoutNode): boolean {
   return node.children.every((child) => isNodeVacant(state, child))
 }
 
+/** The pane that last had the user's attention and is still on screen. */
+export function focusedPane(state: LayoutState): PaneId | undefined {
+  return (state.focus ?? []).find((id) => isPaneVisible(state, id))
+}
+
 /** Hidden panes, in the order they were added. */
 export function hiddenPanes(state: LayoutState): PaneId[] {
   return Object.keys(state.panes).filter((id) => state.panes[id]!.hidden)

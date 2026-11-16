@@ -10,10 +10,11 @@ import type {
   Orientation,
   PaneId,
   PaneState,
+  SizeConstraints,
 } from './types.ts'
 
 export type NodeSpec =
-  | { type: 'group'; panes: PaneId[]; active?: PaneId; weight?: number }
+  | { type: 'group'; panes: PaneId[]; active?: PaneId; weight?: number; size?: SizeConstraints }
   | { type: 'split'; orientation: Orientation; children: NodeSpec[]; weight?: number }
 
 export interface LayoutSpec {
@@ -21,7 +22,10 @@ export interface LayoutSpec {
   edges?: Partial<Record<Edge, Partial<Omit<EdgeDock, 'panes'>> & { panes: PaneId[] }>>
 }
 
-export function group(panes: PaneId[], options: { active?: PaneId; weight?: number } = {}): NodeSpec {
+export function group(
+  panes: PaneId[],
+  options: { active?: PaneId; weight?: number; size?: SizeConstraints } = {},
+): NodeSpec {
   return { type: 'group', panes, ...options }
 }
 
@@ -55,6 +59,7 @@ export function createLayout(spec: LayoutSpec = {}): LayoutState {
         weight,
         panes: [...node.panes],
         active: node.active ?? node.panes[0] ?? null,
+        ...(node.size ? { size: node.size } : {}),
       }
     }
     const id = `s${nextId++}`

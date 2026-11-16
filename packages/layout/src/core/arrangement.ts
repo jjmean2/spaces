@@ -4,7 +4,7 @@ import type { LayoutNode, LayoutState } from './types.ts'
  * Whether two states describe the same arrangement on screen. Generated group,
  * split and window ids are ignored, and weights are compared as shares of
  * their split. So a move that only swaps one group for an identical new one
- * counts as no change.
+ * counts as no change. The focus history is not part of the arrangement.
  */
 export function isSameArrangement(a: LayoutState, b: LayoutState): boolean {
   return a === b || canonical(a) === canonical(b)
@@ -15,7 +15,7 @@ function canonical(state: LayoutState): string {
 
   const tree = (node: LayoutNode, share: number): unknown => {
     const weight = Math.round(share * 1e9) / 1e9
-    if (node.type === 'group') return { weight, panes: node.panes, active: node.active }
+    if (node.type === 'group') return { weight, panes: node.panes, active: node.active, size: node.size }
     const total = node.children.reduce((sum, child) => sum + child.weight, 0)
     return {
       weight,

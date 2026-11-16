@@ -11,6 +11,7 @@ import {
   createLayoutStore,
   findHomeGroup,
   group,
+  isSameArrangement,
   presentPanes,
   removePane,
   row,
@@ -22,6 +23,8 @@ import {
 } from '../index.ts'
 import type { ContainerRef, ContainerRenderProps, LayoutStore, PaneId } from '../index.ts'
 
+// A press records which pane has the user's attention, so "nothing changed" is checked on the
+// arrangement, not on the identity of the state.
 const mounts: Record<string, number> = {}
 const clicks: string[] = []
 
@@ -231,7 +234,7 @@ test('a drop that would change nothing shows no indicator and does nothing', asy
     expect(q('tab-d').dataset.dragging).toBe('true')
     expect(indicator()).toBeNull()
     await commands.pointer([['up']])
-    expect(store.getState()).toBe(before)
+    expect(isSameArrangement(store.getState(), before)).toBe(true)
     expect(clicks).toEqual([])
   }
 })
@@ -247,7 +250,7 @@ test('Escape cancels the drag, and the release that follows is not a click', asy
   expect(indicator()).toBeNull()
   expect(q('tab-a').dataset.dragging).toBeUndefined()
   await commands.pointer([['up']])
-  expect(store.getState()).toBe(before)
+  expect(isSameArrangement(store.getState(), before)).toBe(true)
   expect(clicks).toEqual([])
 
   // The click suppression is gone again.
@@ -263,7 +266,7 @@ test('releasing outside the layout cancels', async () => {
   await commands.pointer([...dragTo('a', 1100, 700)])
   expect(indicator()).toBeNull()
   await commands.pointer([['up']])
-  expect(store.getState()).toBe(before)
+  expect(isSameArrangement(store.getState(), before)).toBe(true)
 })
 
 test('holding Shift drops the pane as a floating window at the pointer', async () => {
@@ -333,7 +336,7 @@ test('a drag ends cleanly when its pane is removed under it', async () => {
   expect(document.body.style.userSelect).toBe('')
   const afterRemoval = store.getState()
   await commands.pointer([['up']])
-  expect(store.getState()).toBe(afterRemoval)
+  expect(isSameArrangement(store.getState(), afterRemoval)).toBe(true)
 
   // The next drag and the next click both work.
   await commands.pointer([...dragTo('b', target.x, target.y), ['up']])
@@ -388,8 +391,8 @@ test('dragging a tab in a nested layout does not touch the outer one', async () 
   const o1 = centre(outerRoot!.querySelector(`[data-spaces-group="${findHomeGroup(outerBefore.root, 'o1')!.id}"]`)!)
   const innerBefore = inner.getState()
   await commands.pointer([...dragTo('i1', o1.x, o1.y), ['up']])
-  expect(inner.getState()).toBe(innerBefore)
-  expect(outer.getState()).toBe(outerBefore)
+  expect(isSameArrangement(inner.getState(), innerBefore)).toBe(true)
+  expect(isSameArrangement(outer.getState(), outerBefore)).toBe(true)
 
   // Released over an inner group: only the inner layout changes.
   const i3 = centre(innerRoot!.querySelector(`[data-spaces-group="${findHomeGroup(innerBefore.root, 'i3')!.id}"]`)!)
@@ -398,6 +401,6 @@ test('dragging a tab in a nested layout does not touch the outer one', async () 
     'i3',
     'i1',
   ])
-  expect(outer.getState()).toBe(outerBefore)
+  expect(isSameArrangement(outer.getState(), outerBefore)).toBe(true)
   expect(document.querySelectorAll('[data-spaces-drop-indicator]')).toHaveLength(0)
 })

@@ -2,9 +2,12 @@ import { describe, expect, test } from 'vitest'
 import {
   addPane,
   column,
+  clampWindowRect,
   createLayout,
   findGroup,
   findHomeGroup,
+  focusPane,
+  focusedPane,
   group,
   groups,
   hiddenPanes,
@@ -14,13 +17,17 @@ import {
   isPaneVisible,
   loadLayout,
   movePane,
+  nodeLimits,
   presentPanes,
   raiseWindow,
   removePane,
   resizePair,
+  resizeWindowRect,
   restorePane,
   row,
+  setGroupSize,
   setWeights,
+  setWindowRect,
   showPane,
   updateEdge,
   validateLayout,
@@ -112,7 +119,10 @@ describe('movePane within the tiled tree', () => {
 
   test('splitting a group around its only pane changes nothing', () => {
     const s = base()
-    expect(movePane(s, 'c', { type: 'split', groupId: groupOf(s, 'c').id, side: 'left' })).toBe(s)
+    // Only the focus history records the move; the tree is the same object.
+    const moved = movePane(s, 'c', { type: 'split', groupId: groupOf(s, 'c').id, side: 'left' })
+    expect(moved.root).toBe(s.root)
+    expect(isSameArrangement(moved, s)).toBe(true)
   })
 
   test('adds a group along the whole tree', () => {
@@ -302,7 +312,7 @@ describe('tab positions', () => {
     const groupId = groupOf(s, 'a').id
     expect(tabs(valid(movePane(s, 'a', { type: 'group', groupId, index: 2 })), 'a')).toEqual(['b', 'c', 'a', 'd'])
     expect(tabs(valid(movePane(s, 'd', { type: 'group', groupId, index: 0 })), 'a')).toEqual(['d', 'a', 'b', 'c'])
-    expect(movePane(s, 'a', { type: 'group', groupId, index: 0 })).toBe(s)
+    expect(movePane(s, 'a', { type: 'group', groupId, index: 0 }).root).toBe(s.root)
   })
 
   test('an index skips tabs that are away', () => {
@@ -365,6 +375,111 @@ describe('weights', () => {
   })
 })
 
+describe('size limits', () => {
+  test('a split takes its limits from the children it shows', () => {
+    let s = createLayout({
+      root: row(
+        group(['nav'], { size: { minWidth: 200, maxWidth: 200 } }),
+        column(group(['head'], { size: { minHeight: 48, maxHeight: 48, minWidth: 300 } }), group(['main'], { size: { minHeight: 100 } })),
+      ),
+    })
+    expect(nodeLimits(s, s.root!, 4)).toEqual({ minWidth: 504, maxWidth: Infinity, minHeight: 152, maxHeight: Infinity })
+    // A hidden child and its divider no longer count.
+    s = hidePane(s, 'nav')
+    expect(nodeLimits(s, s.root!, 4)).toMatchObject({ minWidth: 300, minHeight: 152 })
+  })
+
+  test('setGroupSize sets and clears limits, and rejects impossible ones', () => {
+    const s = createLayout({ root: row(group(['a']), group(['b'])) })
+    const id = groupOf(s, 'a').id
+    const limited = valid(setGroupSize(s, id, { minWidth: 120 }))
+    expect(groupOf(limited, 'a').size).toEqual({ minWidth: 120 })
+    expect(isSameArrangement(s, limited)).toBe(false)
+    expect(groupOf(valid(setGroupSize(limited, id, undefined)), 'a').size).toBeUndefined()
+    expect(validateLayout(setGroupSize(s, id, { minWidth: 300, maxWidth: 100 }))).toEqual([
+      `group "${id}" has a minimum size above its maximum`,
+    ])
+  })
+
+  test('limits survive a save and a group being wrapped in a split', () => {
+    let s = createLayout({ root: row(group(['a', 'b'], { size: { minWidth: 120 } }), group(['c'])) })
+    s = valid(movePane(s, 'c', { type: 'split', groupId: groupOf(s, 'a').id, side: 'bottom' }))
+    expect(groupOf(s, 'a').size).toEqual({ minWidth: 120 })
+    expect(loadLayout(JSON.parse(JSON.stringify(s)))).toEqual(s)
+  })
+
+  test('resizePair respects maximum sizes', () => {
+    expect(resizePair({ weights: [1, 1], sizes: [200, 200], delta: 150, max: [250, Infinity] })).toEqual([1.25, 0.75])
+    // The second side may not grow past its maximum, which holds the first side up.
+    expect(resizePair({ weights: [1, 1], sizes: [200, 200], delta: -150, max: [Infinity, 260] })).toEqual([0.7, 1.3])
+    expect(resizePair({ weights: [1, 1], sizes: [200, 200], delta: 50, min: 190, max: 195 })).toEqual([1, 1])
+  })
+})
+
+describe('focus history', () => {
+  test('moving, showing and focusing a pane put it first', () => {
+    let s = createLayout({ root: row(group(['a', 'b']), group(['c'])) })
+    expect(focusedPane(s)).toBeUndefined()
+    s = valid(focusPane(s, 'c'))
+    s = valid(showPane(s, 'b'))
+    s = valid(movePane(s, 'a', { type: 'floating' }))
+    expect(s.focus).toEqual(['a', 'b', 'c'])
+    expect(focusPane(s, 'a')).toBe(s)
+  })
+
+  test('the focused pane is the most recent one still on screen', () => {
+    let s = createLayout({ root: row(group(['a', 'b'], { active: 'b' }), group(['c'])) })
+    s = focusPane(focusPane(s, 'c'), 'b')
+    expect(focusedPane(s)).toBe('b')
+    s = valid(hidePane(s, 'b'))
+    expect(focusedPane(s)).toBe('c')
+    s = valid(removePane(s, 'c'))
+    expect(s.focus).toEqual(['b'])
+    expect(focusedPane(s)).toBeUndefined()
+  })
+
+  test('focus is not part of the arrangement', () => {
+    const s = createLayout({ root: row(group(['a']), group(['b'])) })
+    expect(isSameArrangement(s, focusPane(s, 'b'))).toBe(true)
+  })
+
+  test('a pane with no slot is restored beside the most recently focused tiled pane', () => {
+    let s = createLayout({ root: row(group(['a']), group(['b'])), edges: { left: { panes: ['x', 'y'] } } })
+    s = valid(restorePane(focusPane(s, 'b'), 'x'))
+    expect(shape(s)).toBe('row(a*, b|x*)')
+    // The dock pane y was focused last, but it is not tiled: the choice falls to x, which is.
+    s = valid(restorePane(focusPane(focusPane(s, 'a'), 'x'), 'y'))
+    expect(shape(s)).toBe('row(a*, b|x|y*)')
+  })
+
+  test('a layout saved before focus history existed still loads', () => {
+    const { focus: _focus, ...saved } = focusPane(createLayout({ root: group(['a']) }), 'a')
+    expect(validateLayout(loadLayout(JSON.parse(JSON.stringify(saved))))).toEqual([])
+  })
+})
+
+describe('floating window geometry', () => {
+  const rect = { x: 100, y: 100, width: 300, height: 200 }
+  const min = { width: 160, height: 100 }
+
+  test('dragging an edge keeps the opposite edge in place', () => {
+    expect(resizeWindowRect(rect, { right: true, bottom: true }, 50, -20, min)).toEqual({ x: 100, y: 100, width: 350, height: 180 })
+    expect(resizeWindowRect(rect, { left: true, top: true }, 50, -20, min)).toEqual({ x: 150, y: 80, width: 250, height: 220 })
+  })
+
+  test('it stops at the minimum size without moving the opposite edge', () => {
+    expect(resizeWindowRect(rect, { left: true }, 500, 0, min)).toEqual({ x: 240, y: 100, width: 160, height: 200 })
+    expect(resizeWindowRect(rect, { bottom: true }, 0, -500, min)).toEqual({ x: 100, y: 100, width: 300, height: 100 })
+  })
+
+  test('a window is drawn where its top strip can still be reached', () => {
+    const bounds = { width: 800, height: 600 }
+    expect(clampWindowRect(rect, bounds)).toEqual(rect)
+    expect(clampWindowRect({ ...rect, x: 900, y: 700 }, bounds)).toEqual({ ...rect, x: 752, y: 552 })
+    expect(clampWindowRect({ ...rect, x: -500, y: -50 }, bounds)).toEqual({ ...rect, x: -252, y: 0 })
+  })
+})
+
 describe('identity and persistence', () => {
   test('unchanged parts of the state keep their identity', () => {
     const s = createLayout({ root: row(group(['a', 'b']), column(group(['c']), group(['d']))) })
@@ -372,7 +487,9 @@ describe('identity and persistence', () => {
     const [, right] = (s.root as { children: LayoutNode[] }).children
     expect((next.root as { children: LayoutNode[] }).children[1]).toBe(right)
     expect(next.edges.right).toBe(s.edges.right)
-    expect(showPane(s, 'a')).toBe(s)
+    const shown = showPane(s, 'a')
+    expect(shown.root).toBe(s.root)
+    expect(showPane(shown, 'a')).toBe(shown)
   })
 
   test('a state survives a JSON round trip', () => {
@@ -426,7 +543,9 @@ describe('random action sequences keep every invariant', () => {
 
     for (let step = 0; step < 600; step++) {
       const ids = Object.keys(state.panes)
-      const op = pick(['move', 'move', 'move', 'restore', 'hide', 'show', 'remove', 'add', 'edge'] as const)
+      const op = pick([
+        'move', 'move', 'move', 'restore', 'hide', 'show', 'remove', 'add', 'edge', 'focus', 'size', 'rect',
+      ] as const)
       const before = state
       if (op === 'add' || ids.length === 0) state = addPane(state, `p${created++}`, target())
       else if (op === 'move') state = movePane(state, pick(ids), target())
@@ -434,7 +553,17 @@ describe('random action sequences keep every invariant', () => {
       else if (op === 'hide') state = hidePane(state, pick(ids))
       else if (op === 'show') state = showPane(state, pick(ids))
       else if (op === 'remove') state = removePane(state, pick(ids))
-      else state = updateEdge(state, pick(sides), { open: random() > 0.5 })
+      else if (op === 'focus') state = focusPane(state, pick(ids))
+      else if (op === 'size') {
+        const all = [...groups(state.root)]
+        if (all.length > 0) {
+          state = setGroupSize(state, pick(all).id, random() > 0.3 ? { minWidth: 50, maxHeight: 400 } : undefined)
+        }
+      } else if (op === 'rect') {
+        if (state.floating.length > 0) {
+          state = setWindowRect(state, pick(state.floating).id, { x: random() * 500, y: random() * 300, width: 200, height: 150 })
+        }
+      } else state = updateEdge(state, pick(sides), { open: random() > 0.5 })
 
       const errors = validateLayout(state)
       if (errors.length > 0) {

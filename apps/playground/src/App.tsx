@@ -53,7 +53,7 @@ export function App() {
         >
           Add pane
         </button>
-        <span className="label">Drag a tab to move it; hold Shift to float it.</span>
+        <span className="label">Drag a tab to move it; hold Shift to float it. Resize a floating window by its edges.</span>
         <span className="label">Closed docks:</span>
         {EDGES.filter((edge) => state.edges[edge].panes.length > 0 && !state.edges[edge].open).map((edge) => (
           <button key={edge} type="button" onClick={() => store.update((s) => updateEdge(s, edge, { open: true }))}>
@@ -70,6 +70,7 @@ export function App() {
       <Layout
         store={store}
         className="layout"
+        sashSize={5}
         renderPane={() => <DemoPane />}
         renderContainer={(props) => <Chrome {...props} />}
       />
@@ -82,7 +83,7 @@ function findFirstGroup(state: LayoutState): string | null {
   return state.root ? visit(state.root) : null
 }
 
-function Chrome({ container, panes, active }: ContainerRenderProps) {
+function Chrome({ container, panes, active, focused }: ContainerRenderProps) {
   const store = useLayoutStore()
   const state = useLayoutState(store)
   const act = (fn: (s: LayoutState) => LayoutState) => () => store.update(fn)
@@ -90,7 +91,7 @@ function Chrome({ container, panes, active }: ContainerRenderProps) {
   const tiled = container.type === 'group'
 
   return (
-    <section className="chrome" data-kind={container.type}>
+    <section className="chrome" data-kind={container.type} data-focused={focused}>
       <div className="tabs" role="tablist">
         {container.type === 'floating' && <WindowGrip id={container.id} />}
         {panes.map((id) => (
