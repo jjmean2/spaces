@@ -19,9 +19,10 @@ import {
   useLayoutState,
   useLayoutStore,
   usePaneId,
+  useTabDrag,
   useWindowDrag,
 } from '@spaces/layout'
-import type { ContainerRenderProps, Edge, LayoutState, WindowId } from '@spaces/layout'
+import type { ContainerRenderProps, Edge, LayoutState, PaneId, WindowId } from '@spaces/layout'
 import './app.css'
 
 const initial = () =>
@@ -52,6 +53,7 @@ export function App() {
         >
           Add pane
         </button>
+        <span className="label">Drag a tab to move it; hold Shift to float it.</span>
         <span className="label">Closed docks:</span>
         {EDGES.filter((edge) => state.edges[edge].panes.length > 0 && !state.edges[edge].open).map((edge) => (
           <button key={edge} type="button" onClick={() => store.update((s) => updateEdge(s, edge, { open: true }))}>
@@ -92,16 +94,7 @@ function Chrome({ container, panes, active }: ContainerRenderProps) {
       <div className="tabs" role="tablist">
         {container.type === 'floating' && <WindowGrip id={container.id} />}
         {panes.map((id) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={id === active}
-            className="tab"
-            onClick={act((s) => showPane(s, id))}
-          >
-            {id}
-          </button>
+          <Tab key={id} id={id} active={id === active} />
         ))}
         {active && (
           <span className="actions">
@@ -147,6 +140,23 @@ function Chrome({ container, panes, active }: ContainerRenderProps) {
       </div>
       <PaneSlot />
     </section>
+  )
+}
+
+/** A tab that activates its pane on click and can be dragged to move it. */
+function Tab({ id, active }: { id: PaneId; active: boolean }) {
+  const store = useLayoutStore()
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      className="tab"
+      {...useTabDrag(id)}
+      onClick={() => store.update((s) => showPane(s, id))}
+    >
+      {id}
+    </button>
   )
 }
 

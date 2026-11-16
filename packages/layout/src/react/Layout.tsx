@@ -1,19 +1,23 @@
-import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef } from 'react'
+import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import type { CSSProperties, PointerEvent, ReactNode } from 'react'
 import {
+  EDGES,
   findNode,
+  groups,
   isNodeVacant,
   isPaneVisible,
   paneContainerRef,
   presentPanes,
   raiseWindow,
   resizePair,
+  resolveDrop,
   setWeights,
   setWindowRect,
   updateEdge,
 } from '../core/index.ts'
 import type {
   ContainerRef,
+  DropResolver,
   Edge,
   LayoutNode,
   LayoutState,
@@ -25,10 +29,13 @@ import {
   LayoutContext,
   PaneContext,
   containerKey,
+  useInternals,
   useLayoutStore,
   useSlotRegistration,
 } from './context.ts'
 import type { LayoutInternals } from './context.ts'
+import { createDragController } from './drag.ts'
+import type { DragController, DragState } from './drag.ts'
 import { Sash } from './Sash.tsx'
 import { useLayoutState } from './store.ts'
 import type { LayoutStore } from './store.ts'
@@ -52,6 +59,13 @@ export interface LayoutProps {
   renderContainer(props: ContainerRenderProps): ReactNode
   /** Smallest size in pixels a divider can shrink a region to. */
   minSize?: number
+  /**
+   * Decides where a dragged tab would land for a pointer position. Defaults to
+   * `resolveDrop`; wrap it to change the zones or to forbid some drops.
+   */
+  resolveDrop?: DropResolver
+  /** Distance in pixels the pointer must travel before a press on a tab becomes a drag. */
+  dragThreshold?: number
   className?: string
   style?: CSSProperties
 }
@@ -65,6 +79,7 @@ const Z = {
   overlayPane: 3,
   windowChrome: (index: number) => 10 + index * 2,
   windowPane: (index: number) => 11 + index * 2,
+  dropIndicator: 1_000_000,
 }
 
 export function Layout({
@@ -72,6 +87,8 @@ export function Layout({
   renderPane,
   renderContainer,
   minSize = 48,
+  resolveDrop: resolveDropProp = resolveDrop,
+  dragThreshold = 5,
   className,
   style,
 }: LayoutProps) {
@@ -80,6 +97,59 @@ export function Layout({
   const slots = useRef(new Map<string, HTMLElement>())
   const hosts = useRef(new Map<PaneId, HTMLElement>())
   const observer = useRef<ResizeObserver | null>(null)
+  const tiledRef = useRef<HTMLDivElement>(null)
+  const containers = useRef(new Map<string, HTMLElement>())
+  const containerRefs = useRef(new Map<string, (element: HTMLElement | null) => void>())
+
+  /** A stable ref callback per container, recording its element for drop hit-testing. */
+  const containerRef = (ref: ContainerRef) => {
+    const key = containerKey(ref)
+    let callback = containerRefs.current.get(key)
+    if (!callback) {
+      callback = (element) => {
+        if (element) containers.current.set(key, element)
+        else containers.current.delete(key)
+      }
+      containerRefs.current.set(key, callback)
+    }
+    return callback
+  }
+
+  const dragOptions = useRef({ resolve: resolveDropProp, threshold: dragThreshold })
+  dragOptions.current = { resolve: resolveDropProp, threshold: dragThreshold }
+
+  const drag = useMemo(
+    () =>
+      createDragController({
+        store,
+        root: () => rootRef.current,
+        tiled: () => tiledRef.current,
+        resolve: () => dragOptions.current.resolve,
+        threshold: () => dragOptions.current.threshold,
+        containers() {
+          const current = store.getState()
+          const refs: { container: ContainerRef; raised: boolean }[] = [
+            // Front to back: the last floating window is on top.
+            ...current.floating
+              .toReversed()
+              .map((win) => ({ container: { type: 'floating', id: win.id } as ContainerRef, raised: true })),
+            ...EDGES.map((edge) => ({
+              container: { type: 'edge', edge } as ContainerRef,
+              raised: current.edges[edge].mode === 'overlay',
+            })).sort((a, b) => Number(b.raised) - Number(a.raised)),
+            ...[...groups(current.root)].map((g) => ({
+              container: { type: 'group', id: g.id } as ContainerRef,
+              raised: false,
+            })),
+          ]
+          return refs.flatMap(({ container, raised }) => {
+            const element = containers.current.get(containerKey(container))
+            return element ? [{ container, element, raised }] : []
+          })
+        },
+      }),
+    [store],
+  )
 
   // Place every pane's host element over the slot of the container that shows it.
   // Hosts are never re-parented or reordered, so nothing inside them is reset by a move.
@@ -123,6 +193,7 @@ export function Layout({
   const internals = useMemo<LayoutInternals>(
     () => ({
       store,
+      drag,
       registerSlot(key, element) {
         const previous = slots.current.get(key)
         if (previous && previous !== element) getObserver()?.unobserve(previous)
@@ -134,7 +205,7 @@ export function Layout({
         }
       },
     }),
-    [store, getObserver],
+    [store, drag, getObserver],
   )
 
   useLayoutEffect(() => {
@@ -221,7 +292,9 @@ export function Layout({
         style={{ ...FILL, ...box, flexDirection: horizontal ? 'row' : 'column' }}
       >
         {!leading && sash}
-        <div style={{ ...FILL, flex: '1 1 0' }}>{renderChrome({ type: 'edge', edge })}</div>
+        <div ref={containerRef({ type: 'edge', edge })} style={{ ...FILL, flex: '1 1 0' }}>
+          {renderChrome({ type: 'edge', edge })}
+        </div>
         {leading && sash}
       </div>
     )
@@ -234,7 +307,12 @@ export function Layout({
     const flex = `${grow} 1 0px`
     if (node.type === 'group') {
       return (
-        <div key={node.id} data-spaces-group={node.id} style={{ ...FILL, flex }}>
+        <div
+          key={node.id}
+          ref={containerRef({ type: 'group', id: node.id })}
+          data-spaces-group={node.id}
+          style={{ ...FILL, flex }}
+        >
           {renderChrome({ type: 'group', id: node.id })}
         </div>
       )
@@ -302,7 +380,7 @@ export function Layout({
         {pinned('left')}
         <div style={{ ...FILL, flex: '1 1 0', flexDirection: 'column', position: 'relative' }}>
           {pinned('top')}
-          <div data-spaces-center="" style={{ ...FILL, flex: '1 1 0' }}>
+          <div ref={tiledRef} data-spaces-center="" style={{ ...FILL, flex: '1 1 0' }}>
             {rootNode && renderNode(rootNode, 1)}
           </div>
           {pinned('bottom')}
@@ -316,6 +394,7 @@ export function Layout({
         {windows.map(({ win, index }) => (
           <div
             key={win.id}
+            ref={containerRef({ type: 'floating', id: win.id })}
             data-spaces-window={win.id}
             style={{
               ...FILL,
@@ -335,8 +414,36 @@ export function Layout({
         {order.current.map((paneId) => (
           <PaneHost key={paneId} paneId={paneId} store={store} register={registerHost} render={renderPane} />
         ))}
+
+        <DropIndicator drag={drag} />
       </div>
     </LayoutContext.Provider>
+  )
+}
+
+/**
+ * The one element that shows where a dragged tab would land. It has no look of
+ * its own: style `[data-spaces-drop-indicator]`, and use `data-zone` to tell a
+ * tab position (`tab`) from an area.
+ */
+function DropIndicator({ drag }: { drag: DragController }) {
+  const state = useSyncExternalStore(drag.subscribe, drag.getState, () => null)
+  if (!state?.drop) return null
+  const { indicator, zone } = state.drop
+  return (
+    <div
+      data-spaces-drop-indicator=""
+      data-zone={zone}
+      style={{
+        position: 'absolute',
+        left: indicator.x,
+        top: indicator.y,
+        width: indicator.width,
+        height: indicator.height,
+        zIndex: Z.dropIndicator,
+        pointerEvents: 'none',
+      }}
+    />
   )
 }
 
@@ -426,3 +533,32 @@ export function useWindowDrag(windowId: WindowId) {
   }
 }
 
+
+/**
+ * Props that make an element a draggable tab for a pane. Spread them onto the
+ * tab: `<button {...useTabDrag(paneId)} onClick={...} />`. A press that moves
+ * becomes a drag; a press that does not is still a click. Hold Shift while
+ * dragging to drop the pane as a floating window.
+ */
+export function useTabDrag(paneId: PaneId) {
+  const { drag } = useInternals('useTabDrag')
+  const dragging = useSyncExternalStore(
+    drag.subscribe,
+    () => drag.getState()?.paneId === paneId,
+    () => false,
+  )
+  const ref = useCallback((element: HTMLElement | null) => drag.registerTab(paneId, element), [drag, paneId])
+  return {
+    ref,
+    'data-spaces-tab': paneId,
+    'data-dragging': dragging || undefined,
+    style: { touchAction: 'none' } as CSSProperties,
+    onPointerDown: (event: PointerEvent<HTMLElement>) => drag.begin(paneId, event),
+  }
+}
+
+/** The drag under way in this layout, or `null`. For drawing a custom indicator or dimming the source. */
+export function useDragState(): DragState | null {
+  const { drag } = useInternals('useDragState')
+  return useSyncExternalStore(drag.subscribe, drag.getState, () => null)
+}

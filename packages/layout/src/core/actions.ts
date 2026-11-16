@@ -208,11 +208,11 @@ function place(draft: LayoutState, paneId: PaneId, target: Target): void {
           rect: target.rect ?? pane.floatingRect ?? DEFAULT_FLOATING_RECT,
         }
       }
-      win.panes.push(paneId)
-      win.active = paneId
       draft.floating.push(win)
       pane.placement = { type: 'floating', windowId: win.id }
       pane.hidden = false
+      win.panes.splice(listIndex(draft, { type: 'floating', id: win.id }, target.index), 0, paneId)
+      win.active = paneId
       return
     }
   }

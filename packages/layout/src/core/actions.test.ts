@@ -10,6 +10,7 @@ import {
   hiddenPanes,
   hidePane,
   isNodeVacant,
+  isSameArrangement,
   isPaneVisible,
   loadLayout,
   movePane,
@@ -290,6 +291,59 @@ describe('hiding', () => {
     expect(s.floating[0]).toMatchObject({ panes: ['b'], active: null })
     s = valid(showPane(s, 'b'))
     expect(s.floating[0]).toMatchObject({ panes: ['b'], active: 'b', rect })
+  })
+})
+
+describe('tab positions', () => {
+  const tabs = (s: LayoutState, id: string) => presentPanes(s, { type: 'group', id: groupOf(s, id).id })
+
+  test('an index counts the other tabs, so a tab can move right within its own group', () => {
+    const s = createLayout({ root: group(['a', 'b', 'c', 'd']) })
+    const groupId = groupOf(s, 'a').id
+    expect(tabs(valid(movePane(s, 'a', { type: 'group', groupId, index: 2 })), 'a')).toEqual(['b', 'c', 'a', 'd'])
+    expect(tabs(valid(movePane(s, 'd', { type: 'group', groupId, index: 0 })), 'a')).toEqual(['d', 'a', 'b', 'c'])
+    expect(movePane(s, 'a', { type: 'group', groupId, index: 0 })).toBe(s)
+  })
+
+  test('an index skips tabs that are away', () => {
+    let s = createLayout({ root: row(group(['a', 'b', 'c']), group(['x'])) })
+    s = movePane(s, 'b', { type: 'floating' })
+    s = valid(movePane(s, 'x', { type: 'group', groupId: groupOf(s, 'a').id, index: 1 }))
+    expect(tabs(s, 'a')).toEqual(['a', 'x', 'c'])
+    expect(tabs(valid(restorePane(s, 'b')), 'a')).toEqual(['a', 'b', 'x', 'c'])
+  })
+
+  test('a pane joins a floating window at an index', () => {
+    let s = createLayout({ root: group(['a', 'b', 'c', 'd']) })
+    s = movePane(s, 'a', { type: 'floating' })
+    const windowId = s.floating[0]!.id
+    s = movePane(s, 'b', { type: 'floating', windowId })
+    s = valid(movePane(s, 'c', { type: 'floating', windowId, index: 0 }))
+    expect(s.floating[0]!.panes).toEqual(['c', 'a', 'b'])
+    s = valid(movePane(s, 'c', { type: 'floating', windowId, index: 1 }))
+    expect(s.floating[0]!.panes).toEqual(['a', 'c', 'b'])
+  })
+})
+
+describe('isSameArrangement', () => {
+  const base = () => createLayout({ root: row(group(['a', 'b']), group(['c'])) })
+
+  test('ignores generated ids', () => {
+    const s = base()
+    // c is already alone on the right of the other group, so this only replaces its group with a new one.
+    const moved = movePane(s, 'c', { type: 'split', groupId: groupOf(s, 'a').id, side: 'right' })
+    expect(moved).not.toBe(s)
+    expect(groupOf(moved, 'c').id).not.toBe(groupOf(s, 'c').id)
+    expect(isSameArrangement(s, moved)).toBe(true)
+    expect(isSameArrangement(s, movePane(s, 'c', { type: 'root', side: 'right' }))).toBe(true)
+  })
+
+  test('sees real changes', () => {
+    const s = base()
+    expect(isSameArrangement(s, movePane(s, 'c', { type: 'root', side: 'left' }))).toBe(false)
+    expect(isSameArrangement(s, movePane(s, 'b', { type: 'group', groupId: groupOf(s, 'a').id, index: 0 }))).toBe(false)
+    expect(isSameArrangement(s, hidePane(s, 'c'))).toBe(false)
+    expect(isSameArrangement(s, setWeights(s, { [groupOf(s, 'c').id]: 2 }))).toBe(false)
   })
 })
 

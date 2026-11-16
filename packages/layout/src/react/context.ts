@@ -1,9 +1,11 @@
 import { createContext, useContext } from 'react'
 import type { ContainerRef, PaneId } from '../core/index.ts'
+import type { DragController } from './drag.ts'
 import type { LayoutStore } from './store.ts'
 
 export interface LayoutInternals {
   store: LayoutStore
+  drag: DragController
   registerSlot(key: string, element: HTMLElement | null): void
 }
 
@@ -15,7 +17,7 @@ export function containerKey(ref: ContainerRef): string {
   return ref.type === 'edge' ? `edge:${ref.edge}` : `${ref.type}:${ref.id}`
 }
 
-function useInternals(hook: string): LayoutInternals {
+export function useInternals(hook: string): LayoutInternals {
   const internals = useContext(LayoutContext)
   if (!internals) throw new Error(`${hook} must be used inside <Layout>`)
   return internals

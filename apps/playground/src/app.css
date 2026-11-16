@@ -35,3 +35,13 @@ button:hover { border-color: var(--accent); }
 .pane { height: 100%; overflow: auto; padding: 0 14px; box-sizing: border-box; }
 .pane h2 { font-size: 14px; margin: 12px 0 6px; }
 .pane ol { color: var(--muted); }
+
+.tab[data-dragging] { opacity: 0.45; }
+[data-spaces-drop-indicator] {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 3px;
+  transition: left 80ms, top 80ms, width 80ms, height 80ms;
+}
+[data-spaces-drop-indicator][data-zone='tab'] { background: var(--accent); outline: none; border-radius: 1px; }

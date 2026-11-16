@@ -92,9 +92,15 @@ export interface Container {
   active: PaneId | null
 }
 
-/** Where `addPane` and `movePane` put a pane. */
+/**
+ * Where `addPane` and `movePane` put a pane.
+ *
+ * An `index` is a position among the panes shown in the container, counted
+ * without the pane being moved. So moving a tab within its own container to
+ * `index: 2` makes it the third tab. Omit it to add the pane at the end.
+ */
 export type Target =
-  /** Into an existing group as a tab. `index` counts the panes shown in the group. */
+  /** Into an existing group as a tab. */
   | { type: 'group'; groupId: NodeId; index?: number }
   /** Into a new group created beside an existing one. */
   | { type: 'split'; groupId: NodeId; side: Edge }
@@ -102,4 +108,4 @@ export type Target =
   | { type: 'root'; side: Edge }
   | { type: 'edge'; edge: Edge; index?: number }
   /** Into an existing floating window, or a new one when `windowId` is omitted. */
-  | { type: 'floating'; windowId?: WindowId; rect?: Rect }
+  | { type: 'floating'; windowId?: WindowId; index?: number; rect?: Rect }

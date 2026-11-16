@@ -11,8 +11,11 @@ export {
   showPane,
   updateEdge,
 } from './actions.ts'
+export { isSameArrangement } from './arrangement.ts'
 export { column, createLayout, group, loadLayout, row } from './create.ts'
 export type { LayoutSpec, NodeSpec } from './create.ts'
+export { resolveDrop } from './drop.ts'
+export type { Drop, DropInput, DropOptions, DropRegion, DropResolver, DropZone, Point } from './drop.ts'
 export { resizePair } from './resize.ts'
 export {
   getContainer,
