@@ -1,0 +1,25 @@
+{
+  "name": "@spaces/next-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:layout": "pnpm --filter @spaces/layout build",
+    "dev": "pnpm build:layout && next dev",
+    "build": "pnpm build:layout && next build",
+    "start": "next start",
+    "typecheck": "pnpm build:layout && next typegen && tsc --noEmit"
+  },
+  "dependencies": {
+    "@spaces/layout": "workspace:*",
+    "next": "^16.4.6",
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "typescript": "catalog:"
+  }
+}
