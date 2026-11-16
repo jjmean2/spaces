@@ -1,0 +1,48 @@
+{
+  "name": "@spaces/layout",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Headless React layout primitives: IDE-style split layouts and dashboard grids.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@spaces/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./core": {
+      "@spaces/source": "./src/core/index.ts",
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:browser": "vitest run --project browser",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "@vitest/browser-playwright": "^5.1.0",
+    "playwright": "1.63.0",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tsdown": "^0.23.7",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "^5.1.0",
+    "vitest-browser-react": "^2.3.0"
+  }
+}
